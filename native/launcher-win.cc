@@ -128,7 +128,10 @@ struct ItemReg {
                          // THIS copy. Win32 menus belong to one window, so a
                          // menu shown in three windows is three sets of items
                          // wearing the same ids. null for tray / context.
+  std::string role;      // a stock editing item (copy, paste, …): no id, and
+                         // a click runs send_stock_edit instead of MENU <id>
 };
+static void send_stock_edit(const std::string &role);  // below, by KEYSTROKE
 static std::map<UINT, ItemReg *> g_cmd_reg;
 // One id therefore names as many items as there are windows showing it: an
 // app-wide MENUUPD patches every copy, MENUUPD@<win> just that window's.
@@ -418,6 +421,7 @@ static bool png_encoder_clsid() {
 
 struct MenuItemSpec {
   std::string id, label, key;
+  std::string role;  // ROLEITEM: a stock editing item (copy, standard, …)
   bool separator = false;
   bool checked = false;
   bool disabled = false;
@@ -427,10 +431,11 @@ struct MenuSpec {
   std::string title;
   std::vector<MenuItemSpec> items;
   // MENUROLE: a standard menu the launcher would build itself. Win32 has none
-  // to place, so these draw nothing — but the slot still has to occupy an
-  // entry, because the parser flushes the items it has collected into
-  // pending_menus.back() and skipping the push would aim that flush at the
-  // PREVIOUS menu, emptying it. That is exactly what happened to a File menu
+  // to place, so these draw nothing (except an `edit` slot carrying items,
+  // drawn as a plain "Edit" menu — see render_menu) — but the slot still has
+  // to occupy an entry, because the parser flushes the items it has collected
+  // into pending_menus.back() and skipping the push would aim that flush at
+  // the PREVIOUS menu, emptying it. That is exactly what happened to a File menu
   // declared before { role: 'edit' }: it lost every item.
   std::string role;
 };
@@ -529,9 +534,50 @@ static std::string display_key(const std::string &spec) {
   return std::string("\tCtrl+") + (alt ? "Alt+" : "") + (shift ? "Shift+" : "") + k;
 }
 
+// Stock editing items (ROLEITEM). WebView2 has no editing-command API, so a
+// click replays the shortcut into the webview (send_stock_edit). The
+// shortcut is label text only — never an accelerator: the webview already
+// owns Ctrl+C in its text fields, and claiming it here would take it away.
+// Always enabled; unlike macOS there is nothing to ask whether Copy applies.
+struct StockItem { const char *role, *label, *shortcut; };
+static const StockItem kStockItems[] = {
+  {"undo", "Undo", "Ctrl+Z"},   {"redo", "Redo", "Ctrl+Y"},
+  {"cut", "Cut", "Ctrl+X"},     {"copy", "Copy", "Ctrl+C"},
+  {"paste", "Paste", "Ctrl+V"}, {"selectAll", "Select All", "Ctrl+A"},
+};
+
 static void build_menu_items(HMENU menu, const std::vector<MenuItemSpec> &items,
-                             const std::string &kind, HWND owner = nullptr) {
+                             const std::string &kind, HWND owner = nullptr);
+
+static void add_stock_items(HMENU menu, const std::string &role,
+                            const std::string &kind, HWND owner) {
+  if (role == "standard") {
+    for (const char *r : {"undo", "redo", "-", "cut", "copy", "paste", "selectAll"}) {
+      if (r[0] == '-') AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+      else add_stock_items(menu, r, kind, owner);
+    }
+    return;
+  }
+  for (const StockItem &si : kStockItems) {
+    if (role != si.role) continue;
+    UINT cmd = g_next_cmd++;
+    ItemReg *reg = new ItemReg{cmd, menu, "", si.label, kind, false, true,
+                               "", false, false, owner, role};
+    g_cmd_reg[cmd] = reg;
+    AppendMenuW(menu, MF_STRING, cmd,
+                widen(std::string(si.label) + "\t" + si.shortcut).c_str());
+    return;
+  }                                            // unknown role: ignored
+}
+
+static void build_menu_items(HMENU menu, const std::vector<MenuItemSpec> &items,
+                             const std::string &kind, HWND owner) {
   for (const auto &it : items) {
+    if (!it.role.empty()) {
+      // The tray has no text field to edit; menu bar and right-click do.
+      if (kind != "tray") add_stock_items(menu, it.role, kind, owner);
+      continue;
+    }
     if (it.separator) {
       AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
       continue;
@@ -605,12 +651,23 @@ static void render_menu(HWND hwnd) {
   HMENU bar = nullptr;
   if (!spec.empty()) {
     bar = CreateMenu();
+    bool edit_drawn = false;
     for (const auto &m : spec) {
-      if (!m.role.empty())
-        continue;  // a standard menu Win32 doesn't have — nothing to draw
+      // A standard-menu slot. Win32 has no launcher-owned Edit menu (the
+      // webview handles Ctrl+C/V itself), so a bare { role: 'edit' } draws
+      // nothing — but one carrying items becomes a plain "Edit" menu of just
+      // those, in that slot, matching what macOS appends under its stock
+      // items. First edit block only, as on macOS; other roles draw nothing.
+      std::wstring title = widen(m.title);
+      if (!m.role.empty()) {
+        if (m.role != "edit" || m.items.empty() || edit_drawn)
+          continue;
+        edit_drawn = true;
+        title = L"Edit";
+      }
       HMENU popup = CreatePopupMenu();
       build_menu_items(popup, m.items, "menu", hwnd);
-      AppendMenuW(bar, MF_POPUP, (UINT_PTR)popup, widen(m.title).c_str());
+      AppendMenuW(bar, MF_POPUP, (UINT_PTR)popup, title.c_str());
     }
     // Nothing but role slots: no bar rather than an empty strip.
     if (GetMenuItemCount(bar) == 0) {
@@ -823,7 +880,9 @@ static void tray_popup(HMENU menu, const char *event_prefix) {
   PostMessageW(g_hwnd, WM_NULL, 0, 0);
   if (cmd) {
     auto it = g_cmd_reg.find(cmd);
-    if (it != g_cmd_reg.end() && it->second->enabled)
+    if (it != g_cmd_reg.end() && !it->second->role.empty())
+      send_stock_edit(it->second->role);
+    else if (it != g_cmd_reg.end() && it->second->enabled)
       pipe_write_line(std::string(event_prefix) + " " + it->second->id);
   }
 }
@@ -2572,6 +2631,34 @@ static void do_keystroke(webview_t, void *arg) {
   pipe_write_line("GOT " + req->qid + " {\"ok\":" + (ok ? "true" : "false") +
                   ",\"trusted\":true}");
   delete req;
+}
+
+// A stock Edit item was clicked: replay its shortcut into the webview, which
+// holds keyboard focus through a menu-bar click. The shortcut carries no
+// menu accelerator (see kStockItems), so AcceleratorKeyPressed passes it
+// straight to WebView2 — unless the app bound that same combo to an item of
+// its own, which then wins, as it would for a real keypress.
+static void send_stock_edit(const std::string &role) {
+  for (const StockItem &si : kStockItems) {
+    if (role != si.role) continue;
+    std::vector<WORD> mods;
+    WORD key = 0;
+    if (!parse_combo(si.shortcut, mods, key, nullptr)) return;
+    std::vector<INPUT> ins;
+    auto push = [&](WORD vk, bool up) {
+      INPUT in = {};
+      in.type = INPUT_KEYBOARD;
+      in.ki.wVk = vk;
+      in.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
+      ins.push_back(in);
+    };
+    for (WORD m : mods) push(m, false);
+    push(key, false);
+    push(key, true);
+    for (auto it = mods.rbegin(); it != mods.rend(); ++it) push(*it, true);
+    SendInput((UINT)ins.size(), ins.data(), sizeof(INPUT));
+    return;
+  }
 }
 
 struct HotkeyReq {
@@ -4826,7 +4913,9 @@ static LRESULT CALLBACK secwin_proc(HWND hwnd, UINT msg, WPARAM wp,
     // bar reports.
     auto it = g_cmd_reg.find((UINT)LOWORD(wp));
     if (it != g_cmd_reg.end() && it->second->kind == "menu") {
-      if (it->second->enabled)
+      if (!it->second->role.empty())
+        send_stock_edit(it->second->role);
+      else if (it->second->enabled)
         pipe_write_line("MENU " + it->second->id);
       return 0;
     }
@@ -6203,7 +6292,9 @@ static LRESULT CALLBACK tiny_wndproc(HWND hwnd, UINT msg, WPARAM wp,
   case WM_COMMAND: {
     auto it = g_cmd_reg.find((UINT)LOWORD(wp));
     if (it != g_cmd_reg.end() && it->second->kind == "menu") {
-      if (it->second->enabled)
+      if (!it->second->role.empty())
+        send_stock_edit(it->second->role);
+      else if (it->second->enabled)
         pipe_write_line("MENU " + it->second->id);
       return 0;
     }
@@ -6960,7 +7051,8 @@ static void pipe_read_loop() {
         build_stack.assign(1, {});
       } else if (in_menu_block && line.rfind("MENUROLE ", 0) == 0) {
         // A standard-menu slot (MENUROLE edit, macOS's Edit menu). Win32 has
-        // no launcher-owned menu to place, so it draws nothing — but it still
+        // no launcher-owned menu to place, so it draws only the items the app
+        // put in it (see render_menu) — but even an empty one still
         // claims an entry, or the next MENU's flush lands on the menu before
         // it and empties that instead (see MenuSpec::role).
         flush_root();
@@ -6983,6 +7075,12 @@ static void pipe_read_loop() {
         MenuItemSpec sep;
         sep.separator = true;
         build_stack.back().push_back(sep);
+      } else if ((in_menu_block || in_tray_block || in_ctx_block) &&
+                 line.rfind("ROLEITEM ", 0) == 0) {
+        // a stock editing item (copy, paste, …, or the `standard` group)
+        MenuItemSpec it;
+        it.role = line.substr(9);
+        build_stack.back().push_back(it);
       } else if ((in_menu_block || in_tray_block || in_ctx_block) &&
                  line.rfind("SUB ", 0) == 0) {
         std::vector<std::string> p = split_tabs(line.substr(4));

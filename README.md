@@ -819,10 +819,10 @@ const { exists, label, checked, enabled } = await tiny.menu.get('mute');
 The same item shape (checked / enabled / submenu) works in tray and context
 menus, and `menu.update` / `menu.get` reach those too.
 
-On macOS that Edit menu isn't optional — the webview needs its key equivalents
-— but where it sits is. `{ role: 'edit' }` in the array gives it that slot
-instead of the first one, which is how a **File** menu gets to come before it,
-the way every Mac app has it:
+On macOS you get that Edit menu by default, because the webview's ⌘C/⌘V ride
+its key equivalents. Where it sits is up to you. `{ role: 'edit' }` in the
+array gives it that slot instead of the first one, which is how a **File**
+menu gets to come before it, the way every Mac app has it:
 
 ```js
 tiny.menu.set([
@@ -832,8 +832,72 @@ tiny.menu.set([
 ]);
 ```
 
-Windows and Linux have no launcher-owned menu, so they skip the entry and keep
-the order you declared.
+Your own editing commands can go in that menu too. Give the role `items` and
+macOS appends them under Select All, after a separator. They work like any
+other item: ids, keys, ticks, `menu.update` / `menu.get`, clicks through
+`tiny.menu.on`:
+
+```js
+tiny.menu.set([
+  { title: 'File', items: [...] },
+  { role: 'edit', items: [
+    { id: 'find', label: 'Find…', key: 'f' },
+    { id: 'dup',  label: 'Duplicate', key: 'd' },
+  ] },
+]);
+```
+
+To control the stock items too, place them by role inside `items`: `undo`,
+`redo`, `cut`, `copy`, `paste`, `selectAll`, or `standard` for the whole group.
+Once any of them appears, you set the whole order and nothing is added for you:
+
+```js
+{ role: 'edit', items: [                // your items first, stock group below
+  { id: 'find', label: 'Find…', key: 'f' },
+  { separator: true },
+  { role: 'standard' },
+] }
+
+{ role: 'edit', items: [                // just the stock items you want
+  { role: 'undo' }, { role: 'redo' },
+  { separator: true },
+  { role: 'copy' }, { role: 'paste' },
+] }
+```
+
+`standard: false` leaves the stock items out entirely. With no `items` either,
+there is no Edit menu:
+
+```js
+{ role: 'edit', standard: false, items: [{ id: 'find', label: 'Find…', key: 'f' }] }
+{ role: 'edit', standard: false }       // no Edit menu at all
+```
+
+⌘C, ⌘V, ⌘X, ⌘A, ⌘Z and ⌘⇧Z keep working in text fields either way: the
+launcher handles any of those shortcuts that no menu item claims. If one of
+your own items takes ⌘C, it gets ⌘C everywhere, text fields included.
+
+On Windows and Linux the webview handles Ctrl+C/V on its own, so nothing is
+added for you there. A bare `{ role: 'edit' }` is skipped and the bar keeps
+the order you declared. With `items`, the Edit menu in that slot is exactly
+those items, **stock roles included**. So to get the same Edit menu on all
+three platforms, place the stock items yourself:
+
+```js
+{ role: 'edit', items: [                // identical on macOS, Windows, Linux
+  { role: 'standard' },
+  { separator: true },
+  { id: 'find', label: 'Find…', key: 'f' },
+] }
+```
+
+There, stock items show their shortcut (Ctrl+C) but never claim it, so the
+webview's own handling of the keys in text fields is untouched. On Linux they
+run WebKitGTK's editing commands and grey out when they don't apply; on
+Windows a click replays the shortcut into the webview, and they're always
+enabled. `standard: false` only matters on macOS, the one place anything is
+added implicitly. Stock roles work in `tiny.menu.setContext` too, and are
+skipped in the tray. Only the first `edit` block counts.
 
 `{ role: 'app', items: [...] }` is the other slot the launcher owns: on macOS
 those items go **inside the application menu**, between About and Quit, which

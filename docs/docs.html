@@ -784,8 +784,8 @@ await <b>tiny.dialog.prompt</b>(message, { default, ok, cancel });   <i>// strin
 
   <section id="menus">
     <h2>tiny.menu <span class="tag">menu bar + right-click</span></h2>
-    <p class="note">Every app gets an app menu (About, Quit ⌘Q) and an Edit
-    menu (copy/paste) for free; yours append after. This is the <b>app</b>
+    <p class="note">On macOS every app gets an app menu (About, Quit ⌘Q) and
+    an Edit menu (copy/paste) for free; yours append after. This is the <b>app</b>
     menu — every window shows it, including windows opened later. macOS has
     one bar for the whole app; Windows and Linux draw a copy of it inside
     each window.</p>
@@ -799,6 +799,21 @@ await <b>tiny.dialog.prompt</b>(message, { default, ok, cancel });   <i>// strin
   ]},
 ]);
 <b>tiny.menu.on</b>((id) =&gt; …);
+
+<i>// the Edit menu's slot — File before Edit, the Mac way. Your items go</i>
+<i>// below Select All (macOS); win/linux add nothing, so there the menu is</i>
+<i>// exactly your items</i>
+<b>tiny.menu.set</b>([
+  { title: 'File', items: [...] },
+  { role: 'edit', items: [{ id: 'find', label: 'Find…', key: 'f' }] },
+]);
+<i>// stock items by role — undo redo cut copy paste selectAll, or standard</i>
+<i>// for all six. Place any and you set the whole order; they render on all</i>
+<i>// three OSes, so this is the same Edit menu everywhere</i>
+{ role: 'edit', items: [{ role: 'standard' }, { separator: true }, find] }
+<i>// macOS only: drop the implicit stock items (no items too = no Edit menu).</i>
+<i>// ⌘C/⌘V/⌘X/⌘A/⌘Z keep working — the launcher handles unclaimed ones</i>
+{ role: 'edit', standard: false, items: [find] }
 
 <i>// patch a live item — no redeclaring; works for tray + context items too.</i>
 <i>// Every window's copy of the id moves (one shared macOS bar always did).</i>

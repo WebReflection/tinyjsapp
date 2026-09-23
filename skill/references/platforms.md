@@ -24,6 +24,12 @@ instance, auto-update, sqlite, `notify`, `tiny.audio.sampler` (native mixer
 on Linux, page host elsewhere — identical API), `say`/`voices`,
 `launchAtLogin` (built apps on win/linux), `captureScreen` (linux: X11).
 
+Edit menu: macOS adds a stock one on its own (⌘C/⌘V ride its items);
+Windows and Linux add nothing. Stock roles placed in `{ role: 'edit', items }`
+render on all three, so that's how you get the same menu everywhere. Off
+macOS they show Ctrl+C but never claim it; on Windows they're always
+enabled (a click replays the shortcut), on Linux they grey out like macOS.
+
 ## The capability honesty system
 
 `tiny.system.capabilities()` lists only the EXCEPTIONS — test

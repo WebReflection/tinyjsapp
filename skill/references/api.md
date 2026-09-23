@@ -112,8 +112,21 @@ tiny.win.id; tiny.win.close(); await tiny.win.windows();
 
 ```js
 tiny.menu.set([
-  { role: 'edit' },                          // put the standard Edit menu HERE
-                                             // (omit = it goes first on macOS)
+  { role: 'edit', items: [                   // put the standard Edit menu HERE
+    { id: 'find', label: 'Find…', key: 'f' },// (omit = it goes first on macOS);
+  ]},                                        // items: appended below Select All
+                                             // on macOS; win/linux have no
+                                             // stock Edit menu, so these items
+                                             // alone make one. items optional.
+  // Stock items by role, anywhere in items: undo redo cut copy paste
+  // selectAll, or standard (the whole group). Any present = you set the
+  // whole order, e.g. [{ id: 'find', … }, { separator: true },
+  // { role: 'standard' }] puts the stock group LAST. Stock roles render on
+  // ALL platforms (win/linux: shortcut shown, never claimed), so placing
+  // them yourself = the same Edit menu everywhere. standard: false (macOS
+  // only — nothing implicit elsewhere) = no stock items; with no items too,
+  // no Edit menu; macOS still handles ⌘C/V/X/A/Z/⇧Z for any the bar
+  // doesn't claim. Roles also work in setContext; the tray skips them.
   { role: 'app', items: [                    // macOS: INSIDE the application
     { id: 'settings', label: 'Settings…', key: ',' },  // menu, between About
   ]},                                        // and Quit — where Settings…
@@ -142,7 +155,8 @@ later — macOS has one bar, win/linux draw a copy per window), and
 `menu.update` patches every copy at once. Per-window: `tiny.win.menu.set/
 update/reset` (a window that says something else). Whether a bar SHOWS is
 chrome: `setChrome({ menu: false })` — accelerators keep firing, macOS
-ignores it. An app menu (About + Quit) and Edit menu always exist. Same item
+ignores it. An app menu (About + Quit) always exists, and so does the Edit menu
+unless `{ role: 'edit', standard: false }` with no items removes it. Same item
 shape + update/get work for tray and context menus.
 
 ```js
