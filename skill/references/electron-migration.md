@@ -33,6 +33,7 @@ architecture, not the code.
 | preload script / `contextBridge` | not needed — `tiny` is injected into every page automatically |
 | `Tray` | `tiny.tray.set({ title, icon, menu })` (`'sf:<name>'` icons on macOS, `'emoji:<glyph>'` on Windows) |
 | `Menu.setApplicationMenu` | `tiny.menu.set(spec)` — shows in EVERY window on all three OSes; `tiny.win.menu.*` for per-window |
+| `role: 'editMenu'` / `role: 'copy'` etc. | `{ role: 'edit', items: [{ role: 'standard' }, …] }` — stock items by role: `undo` `redo` `cut` `copy` `paste` `selectAll`, or `standard` for all six. macOS adds an Edit menu even if you don't; `standard: false` removes it (⌘C/⌘V keep working) |
 | `globalShortcut` | `tiny.hotkey.register(id, 'cmd+shift+k')` (`cmd` = Ctrl on win/linux) |
 | `dialog.showOpenDialog` etc. | `tiny.dialog.openFile/openFiles/pickFolder/saveFile/alert/confirm/prompt` |
 | `shell.openExternal/showItemInFolder/trashItem` | `tiny.app.shell.open/reveal/trash` |

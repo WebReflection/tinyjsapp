@@ -145,6 +145,11 @@ audioTap / proxyURL), store/secrets, permissions, deep links, auto-update,
   `architecture()` must be awaited (navigator lies on Apple Silicon).
 - Missing system pieces (codecs, speech, tray…) →
   `tiny.system.promptMissing([ids])` puts the fix in front of the user.
+- Edit menu: never declare `{ title: 'Edit' }` — macOS already has one, so
+  the bar shows two. Use `{ role: 'edit', items: [...] }`; for the SAME
+  menu on all three OSes, place the stock items yourself:
+  `items: [{ role: 'standard' }, { separator: true }, ...yours]`
+  (details in references/api.md → Menus).
 
 ## Rules of thumb
 

@@ -4,7 +4,7 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
-## Unreleased
+## 0.41.0 — 2026-09-22
 
 - **Your own items in the Edit menu.** `{ role: 'edit', items: [...] }` now
   appends those items to the standard macOS Edit menu, below Select All and
