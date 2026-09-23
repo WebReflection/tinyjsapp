@@ -16,21 +16,27 @@ https://tinyjs.app/changelog.
   so there the items alone become an **Edit** menu in the declared slot. A
   bare `{ role: 'edit' }` still draws nothing on those platforms. Only the
   first `edit` block counts, as with `app`.
-- **Choose which stock Edit items appear, and where (macOS).** Put
-  `{ role: 'undo' }`, `redo`, `cut`, `copy`, `paste`, `selectAll`, or
+- **Choose which stock Edit items appear, and where, on every platform.**
+  Put `{ role: 'undo' }`, `redo`, `cut`, `copy`, `paste`, `selectAll`, or
   `{ role: 'standard' }` for the whole group, inside `items`. Once any of them
   is there, you set the order and nothing is added for you. For example,
   `[{ id: 'find', … }, { separator: true }, { role: 'standard' }]` puts your
-  items above the stock ones. `standard: false` drops the stock items
-  entirely, and with no `items` either there is no Edit menu. This is the
-  Electron model (Tauri's `PredefinedMenuItem` is the same idea), with one
-  difference: dropping Copy/Paste no longer breaks ⌘C/⌘V in text fields.
-  The launcher handles ⌘C/⌘V/⌘X/⌘A/⌘Z/⌘⇧Z for any shortcut the menu bar
-  doesn't claim, and an app item bound to one of them still wins. A menu
-  holding stock items greys Copy out when nothing is selected, and an
-  app item's `enabled: false` still holds in it. Windows and Linux ignore
-  stock roles and `standard: false`; their webviews handle the shortcuts
-  natively.
+  items above the stock ones. Stock roles render on all three platforms, so
+  one declaration gives the same Edit menu on macOS, Windows and Linux. On
+  Windows and Linux the items show their shortcut (Ctrl+C) without claiming
+  it, so the webview keeps handling the keys in text fields. Linux runs
+  WebKitGTK's editing commands and greys items out when they don't apply;
+  Windows replays the shortcut into WebView2, and its items are always
+  enabled. Roles work in `tiny.menu.setContext` too, and the tray skips them.
+  This is the Electron model (Tauri's `PredefinedMenuItem` is the same idea).
+- **`standard: false` (macOS) drops the implicit stock items**, and with no
+  `items` either there is no Edit menu. Unlike Tauri, dropping Copy/Paste no
+  longer breaks ⌘C/⌘V in text fields: the launcher handles
+  ⌘C/⌘V/⌘X/⌘A/⌘Z/⌘⇧Z for any shortcut the menu bar doesn't claim, and an
+  app item bound to one of them still wins. A menu holding stock items greys
+  Copy out when nothing is selected, and an app item's `enabled: false` still
+  holds in it. Windows and Linux add nothing implicitly, so the flag has
+  nothing to remove there.
 
 ## 0.40.0 — 2026-08-24
 

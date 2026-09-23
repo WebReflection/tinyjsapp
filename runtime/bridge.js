@@ -1122,26 +1122,13 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   // Menu items, shared by menu bar / tray / context menu. Items support
   // { id, label, key?, checked?, enabled?, submenu?: [...] } | { separator }.
   // Stock editing items, placed by role inside an item list: { role: 'copy' },
-  // or { role: 'standard' } for the whole Undo…Select All group. Only macOS
-  // has anything to put there — its Edit shortcuts ride menu items. Windows
-  // and Linux webviews handle Ctrl+C/V themselves, so there the roles are
-  // dropped, along with any separator the drop leaves leading, trailing or
-  // doubled.
+  // or { role: 'standard' } for the whole Undo…Select All group. Every
+  // launcher draws them: macOS as real responder-chain items, Linux through
+  // WebKitGTK's editing commands, Windows by replaying the shortcut into
+  // WebView2. The tray skips them (nothing to edit there).
   const STOCK_ROLES = new Set(['standard', 'undo', 'redo', 'cut', 'copy', 'paste', 'selectAll']);
-  function dropStockRoles(items) {
-    if (!items?.some((it) => it?.role)) return items;
-    const out = [];
-    for (const it of items) {
-      if (it?.role) continue;
-      if (it?.separator && (!out.length || out[out.length - 1].separator)) continue;
-      out.push(it);
-    }
-    while (out.length && out[out.length - 1].separator) out.pop();
-    return out;
-  }
 
   function sendItems(items) {
-    if (IS_WIN || IS_LINUX) items = dropStockRoles(items);
     for (const it of items ?? []) {
       if (it.role) { if (STOCK_ROLES.has(it.role)) send('ROLEITEM ' + it.role); continue; }
       if (it.separator) { send('SEP'); continue; }
@@ -1168,12 +1155,13 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       // it — unless your items place stock roles themselves ({ role: 'copy' },
       // { role: 'standard' }), which hands you the whole order, or
       // standard: false says no stock items at all. Windows/Linux have no
-      // stock Edit menu, so your own items alone make one there. 'app'
-      // (macOS) puts your items INSIDE the application menu, beside About —
-      // which is where Settings… belongs and the one place setMenu could not
-      // previously reach. Elsewhere the role is unknown and its items are
-      // dropped, which is why an app declares Settings here AND in a menu of
-      // its own off-macOS.
+      // implicit stock Edit menu, so there the menu is exactly your items —
+      // stock roles included, which is how one declaration gets the same
+      // Edit menu on all three. 'app' (macOS) puts your items INSIDE the
+      // application menu, beside About — which is where Settings… belongs
+      // and the one place setMenu could not previously reach. Elsewhere the
+      // role is unknown and its items are dropped, which is why an app
+      // declares Settings here AND in a menu of its own off-macOS.
       if (m?.role) {
         const nostd = m.standard === false && !IS_WIN && !IS_LINUX;   // a macOS-only switch
         send('MENUROLE ' + one(m.role) + (nostd ? '\tnostd' : ''));
@@ -1312,8 +1300,9 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // Give it items and they go below Select All; on Windows/Linux those
     // items alone make an "Edit" menu in that slot. Stock roles inside items
     // ({ role: 'copy' }, { role: 'standard' }) put the stock entries where
-    // you want them instead, and standard: false leaves them out (macOS keeps
-    // ⌘C/⌘V working regardless).
+    // you want them instead — on every platform, so the same declaration
+    // gives the same menu everywhere — and standard: false leaves macOS's
+    // implicit ones out (it keeps ⌘C/⌘V working regardless).
     // macOS installs that menu whether you ask or not, because the webview
     // needs its key equivalents to have working ⌘C/⌘V, so declaring the role
     // is the only way to say "and NOT first". Windows and Linux have no such

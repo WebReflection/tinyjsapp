@@ -923,6 +923,8 @@ static void build_menu_into(NSMenu *menu, const std::vector<MenuItemSpec> &items
   menu.autoenablesItems = NO;
   for (const MenuItemSpec &it : items) {
     if (!it.role.empty()) {
+      // The tray has no text field to edit — skipped there, as elsewhere.
+      if (action == @selector(trayItemClicked:)) continue;
       // A menu holding stock items autoenables, so Copy greys out with
       // nothing selected; our items keep their flag via validateMenuItem.
       add_stock_items(menu, it.role);

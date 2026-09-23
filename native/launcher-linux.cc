@@ -105,6 +105,7 @@ struct MenuItemSpec {
   bool separator = false;
   bool submenu = false;
   std::string id, label, key, flags;
+  std::string role;  // ROLEITEM: a stock editing item (copy, standard, …)
   std::vector<MenuItemSpec> children;
 };
 struct MenuSpec {
@@ -342,6 +343,20 @@ static GtkWindow* win_for(const std::string& winid) {
 static SecWin* sec_for(const std::string& winid) {
   auto it = g_secwins.find(winid);
   return it == g_secwins.end() ? nullptr : it->second;
+}
+
+// The webview inside a toplevel; null = whichever of ours is active (main if
+// none is), for menus that belong to no one window.
+static WebKitWebView* wv_in(GtkWindow* win) {
+  if (!win) {
+    for (auto& kv : g_secwins)
+      if (kv.second->win && gtk_window_is_active(kv.second->win)) return kv.second->wv;
+    return g_wv;
+  }
+  if (win == g_win) return g_wv;
+  for (auto& kv : g_secwins)
+    if (kv.second->win == win) return kv.second->wv;
+  return nullptr;
 }
 
 // Is this window meant to be user-fixed? (what the app asked for, which is not
@@ -594,6 +609,29 @@ static gboolean on_context_menu(WebKitWebView*, WebKitContextMenu* menu,
     std::function<void(WebKitContextMenu*, const std::vector<MenuItemSpec>&)> build =
       [&](WebKitContextMenu* m, const std::vector<MenuItemSpec>& items) {
         for (const auto& it : items) {
+          if (!it.role.empty()) {
+            // WebKit's own stock actions: they enable themselves per click.
+            auto stock = [&](const std::string& r) {
+              WebKitContextMenuAction a =
+                  r == "undo" ? WEBKIT_CONTEXT_MENU_ACTION_UNDO
+                : r == "redo" ? WEBKIT_CONTEXT_MENU_ACTION_REDO
+                : r == "cut" ? WEBKIT_CONTEXT_MENU_ACTION_CUT
+                : r == "copy" ? WEBKIT_CONTEXT_MENU_ACTION_COPY
+                : r == "paste" ? WEBKIT_CONTEXT_MENU_ACTION_PASTE
+                : r == "selectAll" ? WEBKIT_CONTEXT_MENU_ACTION_SELECT_ALL
+                : WEBKIT_CONTEXT_MENU_ACTION_NO_ACTION;
+              if (a != WEBKIT_CONTEXT_MENU_ACTION_NO_ACTION)
+                webkit_context_menu_append(m, webkit_context_menu_item_new_from_stock_action(a));
+            };
+            if (it.role == "standard") {
+              for (const char* r : {"undo", "redo", "-", "cut", "copy", "paste", "selectAll"})
+                if (r[0] == '-') webkit_context_menu_append(m, webkit_context_menu_item_new_separator());
+                else stock(r);
+            } else {
+              stock(it.role);
+            }
+            continue;
+          }
           if (it.separator) {
             webkit_context_menu_append(m, webkit_context_menu_item_new_separator());
             continue;
@@ -1308,6 +1346,10 @@ static void build_item_line(const std::string& op, const std::string& rest) {
     g_build_stack.push_back(&level->back().children);
   } else if (op == "SUBEND") {
     if (g_build_stack.size() > 1) g_build_stack.pop_back();
+  } else if (op == "ROLEITEM") {
+    MenuItemSpec it;
+    it.role = rest;
+    level->push_back(it);
   }
 }
 
@@ -1356,6 +1398,77 @@ static GdkModifierType split_accel(const std::string& spec, std::string& key) {
   return (GdkModifierType)mask;
 }
 
+// Stock editing items (ROLEITEM), run through WebKitGTK's own editing
+// commands on the owning window's webview. The shortcut is shown on the item
+// but never bound in the accel group: WebKitGTK already handles Ctrl+C in its
+// text fields, and an accelerator here would take it away from them. Each
+// time the menu opens the items ask the webview whether they apply, so Copy
+// greys out with nothing selected, as on macOS.
+struct StockItem { const char *role, *label, *command; guint keyval; GdkModifierType mods; };
+static const StockItem kStockItems[] = {
+  {"undo", "Undo", WEBKIT_EDITING_COMMAND_UNDO, GDK_KEY_z, GDK_CONTROL_MASK},
+  {"redo", "Redo", WEBKIT_EDITING_COMMAND_REDO, GDK_KEY_z,
+   (GdkModifierType)(GDK_CONTROL_MASK | GDK_SHIFT_MASK)},
+  {"cut", "Cut", WEBKIT_EDITING_COMMAND_CUT, GDK_KEY_x, GDK_CONTROL_MASK},
+  {"copy", "Copy", WEBKIT_EDITING_COMMAND_COPY, GDK_KEY_c, GDK_CONTROL_MASK},
+  {"paste", "Paste", WEBKIT_EDITING_COMMAND_PASTE, GDK_KEY_v, GDK_CONTROL_MASK},
+  {"selectAll", "Select All", WEBKIT_EDITING_COMMAND_SELECT_ALL, GDK_KEY_a, GDK_CONTROL_MASK},
+};
+
+// What a stock item needs at click (and menu-open) time. Owned by the item.
+struct StockData { std::string command; GtkWindow* owner; };
+
+static void stock_items_refresh(GtkWidget* menu, gpointer) {
+  GList* kids = gtk_container_get_children(GTK_CONTAINER(menu));
+  for (GList* l = kids; l; l = l->next) {
+    GtkWidget* mi = GTK_WIDGET(l->data);
+    StockData* sd = (StockData*)g_object_get_data(G_OBJECT(mi), "tiny-stock");
+    WebKitWebView* wv = sd ? wv_in(sd->owner) : nullptr;
+    if (!wv) continue;
+    g_object_ref(mi);  // the menu may be rebuilt before the answer comes back
+    webkit_web_view_can_execute_editing_command(wv, sd->command.c_str(), nullptr,
+      +[](GObject* src, GAsyncResult* res, gpointer data) {
+        GtkWidget* item = GTK_WIDGET(data);
+        gboolean ok = webkit_web_view_can_execute_editing_command_finish(
+            WEBKIT_WEB_VIEW(src), res, nullptr);
+        gtk_widget_set_sensitive(item, ok);
+        g_object_unref(item);
+      }, mi);
+  }
+  g_list_free(kids);
+}
+
+static void add_stock_items(GtkWidget* menu, const std::string& role, GtkWindow* owner) {
+  if (role == "standard") {
+    for (const char* r : {"undo", "redo", "-", "cut", "copy", "paste", "selectAll"}) {
+      if (r[0] == '-') gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+      else add_stock_items(menu, r, owner);
+    }
+    return;
+  }
+  for (const StockItem& si : kStockItems) {
+    if (role != si.role) continue;
+    GtkWidget* mi = gtk_menu_item_new_with_label(si.label);
+    GtkWidget* lbl = gtk_bin_get_child(GTK_BIN(mi));
+    if (GTK_IS_ACCEL_LABEL(lbl))
+      gtk_accel_label_set_accel(GTK_ACCEL_LABEL(lbl), si.keyval, si.mods);
+    g_object_set_data_full(G_OBJECT(mi), "tiny-stock", new StockData{si.command, owner},
+      [](gpointer d) { delete (StockData*)d; });
+    g_signal_connect(mi, "activate", G_CALLBACK(+[](GtkMenuItem* item, gpointer) {
+      StockData* sd = (StockData*)g_object_get_data(G_OBJECT(item), "tiny-stock");
+      if (WebKitWebView* wv = sd ? wv_in(sd->owner) : nullptr)
+        webkit_web_view_execute_editing_command(wv, sd->command.c_str());
+    }), nullptr);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    // once per menu, however many stock items it holds
+    if (!g_object_get_data(G_OBJECT(menu), "tiny-stock-menu")) {
+      g_object_set_data(G_OBJECT(menu), "tiny-stock-menu", GINT_TO_POINTER(1));
+      g_signal_connect(menu, "show", G_CALLBACK(stock_items_refresh), nullptr);
+    }
+    return;
+  }                                            // unknown role: ignored
+}
+
 // Build a GtkMenu from item specs; register items under `kind`. `owner` and
 // `accel` are the window this copy belongs to (null for tray / context).
 static GtkWidget* build_gtk_menu(const std::vector<MenuItemSpec>& items,
@@ -1364,6 +1477,11 @@ static GtkWidget* build_gtk_menu(const std::vector<MenuItemSpec>& items,
                                  GtkAccelGroup* accel = nullptr) {
   GtkWidget* menu = gtk_menu_new();
   for (const auto& it : items) {
+    if (!it.role.empty()) {
+      // The tray has no text field to edit.
+      if (kind != "tray") add_stock_items(menu, it.role, owner);
+      continue;
+    }
     if (it.separator) {
       gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
       continue;
@@ -1597,6 +1715,7 @@ static void apply_tray() {
   }
   GtkWidget* menu = gtk_menu_new();
   for (const auto& it : items) {
+    if (!it.role.empty()) continue;  // stock editing items: no text to edit here
     if (it.separator) {
       gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
       continue;
@@ -6292,6 +6411,7 @@ static void handle_line(const std::string& line) {
     if (line.rfind("SUB ", 0) == 0) { build_item_line("SUB", line.substr(4)); return; }
     if (line == "SUBEND") { build_item_line("SUBEND", ""); return; }
     if (line == "SEP") { build_item_line("SEP", ""); return; }
+    if (line.rfind("ROLEITEM ", 0) == 0) { build_item_line("ROLEITEM", line.substr(9)); return; }
     if (g_build_mode == 1) {
       if (line.rfind("MENU ", 0) == 0) {
         g_build_menubar.push_back({line.substr(5), {}});
@@ -6301,10 +6421,10 @@ static void handle_line(const std::string& line) {
       }
       // A standard-menu slot (MENUROLE edit, macOS's Edit menu). GTK has no
       // launcher-owned Edit menu (WebKitGTK handles Ctrl+C/V itself), so a
-      // bare slot is skipped — but the items an app puts in it become a plain
-      // "Edit" menu in that slot, matching what macOS appends under its stock
-      // items. First edit block only, as on macOS; other roles (`app`) have
-      // nowhere to go here and their items are dropped.
+      // bare slot is skipped — but the items an app puts in it (its own, and
+      // stock ROLEITEMs) become an "Edit" menu in that slot. The macOS-only
+      // `nostd` flag field is never sent here. First edit block only, as on
+      // macOS; other roles (`app`) have nowhere to go and their items drop.
       if (line.rfind("MENUROLE ", 0) == 0) {
         g_build_stack.clear();
         if (line.substr(9) == "edit" && g_build_edit_idx < 0) {

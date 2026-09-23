@@ -877,11 +877,27 @@ there is no Edit menu:
 launcher handles any of those shortcuts that no menu item claims. If one of
 your own items takes ⌘C, it gets ⌘C everywhere, text fields included.
 
-On Windows and Linux the webview handles Ctrl+C/V on its own and there is no
-stock Edit menu. Stock roles and `standard: false` are ignored there. A bare
-`{ role: 'edit' }` is skipped and the bar keeps the order you declared; your
-own items become an **Edit** menu in that slot. Only the first `edit` block
-counts.
+On Windows and Linux the webview handles Ctrl+C/V on its own, so nothing is
+added for you there. A bare `{ role: 'edit' }` is skipped and the bar keeps
+the order you declared. With `items`, the Edit menu in that slot is exactly
+those items, **stock roles included**. So to get the same Edit menu on all
+three platforms, place the stock items yourself:
+
+```js
+{ role: 'edit', items: [                // identical on macOS, Windows, Linux
+  { role: 'standard' },
+  { separator: true },
+  { id: 'find', label: 'Find…', key: 'f' },
+] }
+```
+
+There, stock items show their shortcut (Ctrl+C) but never claim it, so the
+webview's own handling of the keys in text fields is untouched. On Linux they
+run WebKitGTK's editing commands and grey out when they don't apply; on
+Windows a click replays the shortcut into the webview, and they're always
+enabled. `standard: false` only matters on macOS, the one place anything is
+added implicitly. Stock roles work in `tiny.menu.setContext` too, and are
+skipped in the tray. Only the first `edit` block counts.
 
 `{ role: 'app', items: [...] }` is the other slot the launcher owns: on macOS
 those items go **inside the application menu**, between About and Quit, which

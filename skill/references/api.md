@@ -121,9 +121,12 @@ tiny.menu.set([
   // Stock items by role, anywhere in items: undo redo cut copy paste
   // selectAll, or standard (the whole group). Any present = you set the
   // whole order, e.g. [{ id: 'find', … }, { separator: true },
-  // { role: 'standard' }] puts the stock group LAST. standard: false = no
-  // stock items; with no items too, no Edit menu. macOS still handles
-  // ⌘C/V/X/A/Z/⇧Z for any the bar doesn't claim. win/linux ignore both.
+  // { role: 'standard' }] puts the stock group LAST. Stock roles render on
+  // ALL platforms (win/linux: shortcut shown, never claimed), so placing
+  // them yourself = the same Edit menu everywhere. standard: false (macOS
+  // only — nothing implicit elsewhere) = no stock items; with no items too,
+  // no Edit menu; macOS still handles ⌘C/V/X/A/Z/⇧Z for any the bar
+  // doesn't claim. Roles also work in setContext; the tray skips them.
   { role: 'app', items: [                    // macOS: INSIDE the application
     { id: 'settings', label: 'Settings…', key: ',' },  // menu, between About
   ]},                                        // and Quit — where Settings…
