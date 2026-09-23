@@ -602,7 +602,13 @@ struct RegItem {
 // Hence a multimap: an app-wide MENUUPD patches every copy, MENUUPD@<win> one.
 static std::multimap<std::string, RegItem> g_items;
 
-static gboolean on_context_menu(WebKitWebView*, WebKitContextMenu* menu,
+// Undo/Redo have no context-menu stock action in WebKitGTK (the
+// WebKitContextMenuAction enum jumps straight from RELOAD to COPY) — only the
+// editing-command strings exist. So those two roles ride on the webview's
+// editing commands instead of on WebKit's own menu items.
+struct CtxEdit { WebKitWebView* wv; const char* command; };
+
+static gboolean on_context_menu(WebKitWebView* wv, WebKitContextMenu* menu,
                                 GdkEvent*, WebKitHitTestResult*, gpointer) {
   if (g_ctx_custom) {
     webkit_context_menu_remove_all(menu);
@@ -611,11 +617,30 @@ static gboolean on_context_menu(WebKitWebView*, WebKitContextMenu* menu,
         for (const auto& it : items) {
           if (!it.role.empty()) {
             // WebKit's own stock actions: they enable themselves per click.
+            // undo/redo are ours (see CtxEdit above); they stay enabled, since
+            // the can-execute query is async and the menu is already on screen
+            // by the time it answers — a no-op on an empty undo stack. Their
+            // labels are ours too, so untranslated where WebKit's are not.
             auto stock = [&](const std::string& r) {
+              if (r == "undo" || r == "redo") {
+                GSimpleAction* act = g_simple_action_new(("tinyedit-" + r).c_str(), nullptr);
+                g_signal_connect_data(act, "activate",
+                  G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer data) {
+                    CtxEdit* e = (CtxEdit*)data;
+                    webkit_web_view_execute_editing_command(e->wv, e->command);
+                  }),
+                  new CtxEdit{wv, r == "undo" ? WEBKIT_EDITING_COMMAND_UNDO
+                                              : WEBKIT_EDITING_COMMAND_REDO},
+                  [](gpointer data, GClosure*) { delete (CtxEdit*)data; },
+                  (GConnectFlags)0);
+                webkit_context_menu_append(m,
+                  webkit_context_menu_item_new_from_gaction(
+                    G_ACTION(act), r == "undo" ? "Undo" : "Redo", nullptr));
+                g_object_unref(act);
+                return;
+              }
               WebKitContextMenuAction a =
-                  r == "undo" ? WEBKIT_CONTEXT_MENU_ACTION_UNDO
-                : r == "redo" ? WEBKIT_CONTEXT_MENU_ACTION_REDO
-                : r == "cut" ? WEBKIT_CONTEXT_MENU_ACTION_CUT
+                  r == "cut" ? WEBKIT_CONTEXT_MENU_ACTION_CUT
                 : r == "copy" ? WEBKIT_CONTEXT_MENU_ACTION_COPY
                 : r == "paste" ? WEBKIT_CONTEXT_MENU_ACTION_PASTE
                 : r == "selectAll" ? WEBKIT_CONTEXT_MENU_ACTION_SELECT_ALL
