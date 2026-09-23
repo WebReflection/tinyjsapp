@@ -427,10 +427,11 @@ struct MenuSpec {
   std::string title;
   std::vector<MenuItemSpec> items;
   // MENUROLE: a standard menu the launcher would build itself. Win32 has none
-  // to place, so these draw nothing — but the slot still has to occupy an
-  // entry, because the parser flushes the items it has collected into
-  // pending_menus.back() and skipping the push would aim that flush at the
-  // PREVIOUS menu, emptying it. That is exactly what happened to a File menu
+  // to place, so these draw nothing (except an `edit` slot carrying items,
+  // drawn as a plain "Edit" menu — see render_menu) — but the slot still has
+  // to occupy an entry, because the parser flushes the items it has collected
+  // into pending_menus.back() and skipping the push would aim that flush at
+  // the PREVIOUS menu, emptying it. That is exactly what happened to a File menu
   // declared before { role: 'edit' }: it lost every item.
   std::string role;
 };
@@ -605,12 +606,23 @@ static void render_menu(HWND hwnd) {
   HMENU bar = nullptr;
   if (!spec.empty()) {
     bar = CreateMenu();
+    bool edit_drawn = false;
     for (const auto &m : spec) {
-      if (!m.role.empty())
-        continue;  // a standard menu Win32 doesn't have — nothing to draw
+      // A standard-menu slot. Win32 has no launcher-owned Edit menu (the
+      // webview handles Ctrl+C/V itself), so a bare { role: 'edit' } draws
+      // nothing — but one carrying items becomes a plain "Edit" menu of just
+      // those, in that slot, matching what macOS appends under its stock
+      // items. First edit block only, as on macOS; other roles draw nothing.
+      std::wstring title = widen(m.title);
+      if (!m.role.empty()) {
+        if (m.role != "edit" || m.items.empty() || edit_drawn)
+          continue;
+        edit_drawn = true;
+        title = L"Edit";
+      }
       HMENU popup = CreatePopupMenu();
       build_menu_items(popup, m.items, "menu", hwnd);
-      AppendMenuW(bar, MF_POPUP, (UINT_PTR)popup, widen(m.title).c_str());
+      AppendMenuW(bar, MF_POPUP, (UINT_PTR)popup, title.c_str());
     }
     // Nothing but role slots: no bar rather than an empty strip.
     if (GetMenuItemCount(bar) == 0) {
@@ -6960,7 +6972,8 @@ static void pipe_read_loop() {
         build_stack.assign(1, {});
       } else if (in_menu_block && line.rfind("MENUROLE ", 0) == 0) {
         // A standard-menu slot (MENUROLE edit, macOS's Edit menu). Win32 has
-        // no launcher-owned menu to place, so it draws nothing — but it still
+        // no launcher-owned menu to place, so it draws only the items the app
+        // put in it (see render_menu) — but even an empty one still
         // claims an entry, or the next MENU's flush lands on the menu before
         // it and empties that instead (see MenuSpec::role).
         flush_root();

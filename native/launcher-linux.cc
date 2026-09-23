@@ -1267,6 +1267,7 @@ static std::vector<MenuItemSpec> g_build_menus_current;    // items at current l
 static std::vector<std::vector<MenuItemSpec>*> g_build_stack;
 static std::vector<MenuSpec> g_build_menubar;              // MENU sections
 static std::string g_build_menu_win;   // MENUBEGIN@<win>; empty = the app menu
+static int g_build_edit_idx = -1;      // g_build_menubar slot of MENUROLE edit
 static int g_build_mode = 0;   // 0 none, 1 menubar, 2 tray, 3 ctx
 struct TraySpec {
   std::string title, icon, tooltip;
@@ -6299,15 +6300,27 @@ static void handle_line(const std::string& line) {
         return;
       }
       // A standard-menu slot (MENUROLE edit, macOS's Edit menu). GTK has no
-      // launcher-owned menu to place, so the slot is skipped and the bar
-      // keeps the order the app declared for its own menus.
+      // launcher-owned Edit menu (WebKitGTK handles Ctrl+C/V itself), so a
+      // bare slot is skipped — but the items an app puts in it become a plain
+      // "Edit" menu in that slot, matching what macOS appends under its stock
+      // items. First edit block only, as on macOS; other roles (`app`) have
+      // nowhere to go here and their items are dropped.
       if (line.rfind("MENUROLE ", 0) == 0) {
         g_build_stack.clear();
+        if (line.substr(9) == "edit" && g_build_edit_idx < 0) {
+          g_build_edit_idx = (int)g_build_menubar.size();
+          g_build_menubar.push_back({"Edit", {}});
+          g_build_stack.push_back(&g_build_menubar.back().items);
+        }
         return;
       }
       if (line == "MENUEND") {
         g_build_mode = 0;
         g_build_stack.clear();
+        // An edit slot nobody filled draws nothing, as before.
+        if (g_build_edit_idx >= 0 && g_build_menubar[g_build_edit_idx].items.empty())
+          g_build_menubar.erase(g_build_menubar.begin() + g_build_edit_idx);
+        g_build_edit_idx = -1;
         if (g_build_menu_win.empty()) {
           g_app_menu = g_build_menubar;
           apply_app_menu_everywhere();
@@ -6419,6 +6432,7 @@ static void handle_line(const std::string& line) {
     g_build_menu_win = line.size() > 10 ? line.substr(10) : "";
     g_build_menubar.clear();
     g_build_stack.clear();
+    g_build_edit_idx = -1;
     return;
   }
   // MENURESET@<win>: drop the override, back to inheriting the app menu.

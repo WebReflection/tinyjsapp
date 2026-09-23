@@ -32,7 +32,8 @@
 //                         MENUBEGIN / MENU <title> /
 //                         ITEM <id>\t<label>\t<key>\t<flags c|d> /
 //                         SUB <id>\t<label> … SUBEND /
-//                         SEP / MENUROLE <role> /
+//                         SEP / ROLEITEM <role> /
+//                         MENUROLE <role>[\tnostd] /
 //                         MENUEND                    declare custom menu bar
 //                                                    menus (MENUBEGIN@<win>
 //                                                    declares that WINDOW's
@@ -43,7 +44,15 @@
 //                                                    flags: c=checked,
 //                                                    d=disabled; SUB nests;
 //                                                    MENUROLE edit places the
-//                                                    standard Edit menu;
+//                                                    standard Edit menu (its
+//                                                    ITEMs append below
+//                                                    Select All; ROLEITEMs
+//                                                    among them — undo, redo,
+//                                                    cut, copy, paste,
+//                                                    selectAll, standard —
+//                                                    set the whole order;
+//                                                    nostd drops the stock
+//                                                    group);
 //                                                    MENUROLE app + ITEMs puts
 //                                                    them in the APPLICATION
 //                                                    menu, between About and
@@ -736,7 +745,9 @@ static void do_dialog(webview_t w, void *arg) {
 //
 // The standard Edit menu is installed too — the webview needs its key
 // equivalents for ⌘C/⌘V to work — and it goes first unless a MENUROLE edit
-// line says where it belongs instead ({ role: 'edit' } in setMenu).
+// line says where it belongs instead ({ role: 'edit' } in setMenu). What it
+// holds is the app's call too (stock roles, `nostd`); install_stock_key_fallback
+// keeps the shortcuts alive whatever it leaves out.
 
 struct MenuItemSpec {
   std::string id, label, key;
@@ -744,11 +755,13 @@ struct MenuItemSpec {
   bool checked = false;   // ITEM flags field: 'c'
   bool disabled = false;  // ITEM flags field: 'd'
   std::vector<MenuItemSpec> submenu; // SUB <id>\t<label> … SUBEND nesting
+  std::string role;       // ROLEITEM line: a stock item (copy, standard, …)
 };
 struct MenuSpec {
   std::string title;
   std::vector<MenuItemSpec> items;
   std::string role;       // MENUROLE line: a standard menu, built by us
+  bool no_standard = false; // MENUROLE edit\tnostd: no implicit stock group
 };
 
 #ifdef __APPLE__
@@ -771,6 +784,8 @@ static NSMenu *g_tray_menu = nil;
 - (void)doQuit:(id)sender;
 @end
 
+static const NSInteger kTinyItemDisabled = 1;  // NSMenuItem.tag: app said disabled
+
 @implementation TinyMenuTarget
 - (void)itemClicked:(NSMenuItem *)sender {
   NSString *mid = (NSString *)sender.representedObject;
@@ -786,6 +801,13 @@ static NSMenu *g_tray_menu = nil;
   NSString *mid = (NSString *)sender.representedObject;
   if (mid)
     sock_write_line(std::string("CTX ") + [mid UTF8String]);
+}
+// Only consulted in menus that autoenable — the ones holding stock items,
+// which need the responder chain to grey Copy out with nothing selected. Our
+// own items there keep the app's enabled flag in their tag (see
+// build_menu_into and MENUUPD), since autoenabling overwrites .enabled.
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+  return item.tag != kTinyItemDisabled;
 }
 - (void)showDevTools:(id)sender {
   (void)sender;
@@ -873,10 +895,40 @@ static NSEventModifierFlags split_accel(const std::string &spec, std::string &ke
 
 // Recursively fill `menu` from specs. autoenablesItems=NO so `disabled`
 // sticks (AppKit would otherwise re-enable anything with a live target).
+// Stock editing items, by role. Target nil: they go to the first responder
+// (the webview, or a field in a sheet), which is what makes ⌘C/⌘V work at
+// all — see kStockKeys and the fallback in main() for when an app leaves
+// them out. 'standard' is the whole group, as the default Edit menu has it.
+static void add_stock_items(NSMenu *menu, const std::string &role) {
+  if (role == "standard") {
+    for (const char *r : {"undo", "redo", "-", "cut", "copy", "paste", "selectAll"})
+      if (r[0] == '-') [menu addItem:[NSMenuItem separatorItem]];
+      else add_stock_items(menu, r);
+    return;
+  }
+  NSString *title = nil, *key = nil;
+  SEL action = nullptr;
+  if (role == "undo")           { title = @"Undo";       action = @selector(undo:);      key = @"z"; }
+  else if (role == "redo")      { title = @"Redo";       action = @selector(redo:);      key = @"Z"; }
+  else if (role == "cut")       { title = @"Cut";        action = @selector(cut:);       key = @"x"; }
+  else if (role == "copy")      { title = @"Copy";       action = @selector(copy:);      key = @"c"; }
+  else if (role == "paste")     { title = @"Paste";      action = @selector(paste:);     key = @"v"; }
+  else if (role == "selectAll") { title = @"Select All"; action = @selector(selectAll:); key = @"a"; }
+  else return;                                               // unknown: ignored
+  [menu addItemWithTitle:title action:action keyEquivalent:key];
+}
+
 static void build_menu_into(NSMenu *menu, const std::vector<MenuItemSpec> &items,
                             SEL action, NSMutableDictionary *registry) {
   menu.autoenablesItems = NO;
   for (const MenuItemSpec &it : items) {
+    if (!it.role.empty()) {
+      // A menu holding stock items autoenables, so Copy greys out with
+      // nothing selected; our items keep their flag via validateMenuItem.
+      add_stock_items(menu, it.role);
+      menu.autoenablesItems = YES;
+      continue;
+    }
     if (it.separator) {
       [menu addItem:[NSMenuItem separatorItem]];
       continue;
@@ -891,6 +943,7 @@ static void build_menu_into(NSMenu *menu, const std::vector<MenuItemSpec> &items
     mi.representedObject = ns(it.id);
     mi.state = it.checked ? NSControlStateValueOn : NSControlStateValueOff;
     mi.enabled = it.disabled ? NO : YES;
+    mi.tag = it.disabled ? kTinyItemDisabled : 0;
     if (!it.submenu.empty()) {
       NSMenu *sub = [[[NSMenu alloc] initWithTitle:ns(it.label)] autorelease];
       build_menu_into(sub, it.submenu, action, registry);
@@ -971,27 +1024,46 @@ static void build_bar(MacBar &mb) {
     [appMenu addItem:quit];
     appItem.submenu = appMenu;
 
-    // Standard Edit menu so cmd-C/V/X/A work in the webview. It is not
-    // optional — without it the webview has no key equivalents — but WHERE it
-    // sits is: a `MENUROLE edit` slot puts it between custom menus, so an app
-    // can have File before Edit. No slot declared: straight after the app
-    // menu, as it always was.
+    // The Edit menu. Its stock items are what make ⌘C/⌘V/⌘Z work in the
+    // webview (key equivalents ride menu items) — but the fallback in main()
+    // covers any the app leaves out, so the app decides what shows:
+    //   no slot / bare `MENUROLE edit` — the stock group, as always;
+    //   + ITEMs            — the stock group, a separator, then those items;
+    //   + ITEMs with ROLEITEMs — exactly those, in that order (a `standard`
+    //                        ROLEITEM is the whole group, placed there);
+    //   `MENUROLE edit\tnostd` — the app's items only; none = no Edit menu.
+    // WHERE it sits: a slot puts it between custom menus, so File can come
+    // first; no slot, straight after the app menu. First edit block only,
+    // like `app` — a second would double the items.
     bool edit_placed = false;
     auto add_edit_menu = [&]() {
       if (edit_placed) return;
       edit_placed = true;
-      NSMenuItem *editItem = [[NSMenuItem alloc] init];
+      const MenuSpec *spec = nullptr;
+      if (menus)
+        for (const MenuSpec &m : *menus)
+          if (m.role == "edit") { spec = &m; break; }
+      std::vector<MenuItemSpec> items;
+      bool places_roles = false;
+      if (spec)
+        for (const MenuItemSpec &it : spec->items)
+          if (!it.role.empty()) places_roles = true;
+      if (!places_roles && !(spec && spec->no_standard)) {
+        MenuItemSpec std_group;
+        std_group.role = "standard";
+        items.push_back(std_group);
+        if (spec && !spec->items.empty()) {
+          MenuItemSpec sep;
+          sep.separator = true;
+          items.push_back(sep);
+        }
+      }
+      if (spec) items.insert(items.end(), spec->items.begin(), spec->items.end());
+      if (items.empty()) return;                   // nostd and nothing of its own
+      NSMenuItem *editItem = [[[NSMenuItem alloc] init] autorelease];
       [bar addItem:editItem];
-      NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
-      [editMenu addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
-      [editMenu addItemWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"Z"];
-      [editMenu addItem:[NSMenuItem separatorItem]];
-      [editMenu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
-      [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
-      [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
-      [editMenu addItemWithTitle:@"Select All"
-                          action:@selector(selectAll:)
-                   keyEquivalent:@"a"];
+      NSMenu *editMenu = [[[NSMenu alloc] initWithTitle:@"Edit"] autorelease];
+      build_menu_into(editMenu, items, @selector(itemClicked:), mb.reg);
       editItem.submenu = editMenu;
     };
 
@@ -3623,8 +3695,10 @@ static void do_menu_update(webview_t, void *arg) {
       if (!req->checked.empty())
         mi.state = req->checked == "1" ? NSControlStateValueOn
                                        : NSControlStateValueOff;
-      if (!req->enabled.empty())
+      if (!req->enabled.empty()) {
         mi.enabled = req->enabled == "1";
+        mi.tag = mi.enabled ? 0 : kTinyItemDisabled;  // autoenabling menus
+      }
     }
     // Context menus rebuild from spec at right-click; patch the spec too.
     if (MenuItemSpec *spec = find_ctx_spec(g_ctx_items, req->id)) {
@@ -5990,6 +6064,58 @@ static void install_devtools_key_monitor() {
   }];
 }
 
+// ⌘C/⌘V/⌘X/⌘A/⌘Z/⌘⇧Z reach the webview only as menu key equivalents — a
+// WKWebView turns a bare ⌘C keyDown into nothing. An app may leave the stock
+// Edit items out (`{ role: 'edit', standard: false }`, or roles that skip
+// some), so any of these the CURRENT bar doesn't claim is sent down the
+// responder chain here, exactly as the stock item would have. Anything the
+// bar does claim — stock or the app's own ⌘C — is left to the bar.
+static NSEventModifierFlags key_mods(NSEventModifierFlags f) {
+  return f & (NSEventModifierFlagCommand | NSEventModifierFlagShift |
+              NSEventModifierFlagOption | NSEventModifierFlagControl);
+}
+
+static bool menu_claims_key(NSMenu *menu, NSString *key, NSEventModifierFlags mods) {
+  for (NSMenuItem *mi in menu.itemArray) {
+    if (mi.submenu && menu_claims_key(mi.submenu, key, mods)) return true;
+    NSString *ke = mi.keyEquivalent;
+    if (ke.length == 0) continue;
+    NSEventModifierFlags m = key_mods(mi.keyEquivalentModifierMask);
+    // An uppercase letter means ⇧ (the stock Redo is @"Z" + ⌘).
+    if (![ke isEqualToString:ke.lowercaseString]) {
+      m |= NSEventModifierFlagShift;
+      ke = ke.lowercaseString;
+    }
+    if (m == mods && [ke isEqualToString:key]) return true;
+  }
+  return false;
+}
+
+static void install_stock_key_fallback() {
+  [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                        handler:^NSEvent *(NSEvent *ev) {
+    NSEventModifierFlags mods = key_mods(ev.modifierFlags);
+    if (!(mods & NSEventModifierFlagCommand)) return ev;
+    NSString *key = ev.charactersIgnoringModifiers.lowercaseString;
+    const NSEventModifierFlags cmd = NSEventModifierFlagCommand;
+    const NSEventModifierFlags cmd_shift = cmd | NSEventModifierFlagShift;
+    SEL action = nullptr;
+    if (mods == cmd) {
+      if ([key isEqualToString:@"z"]) action = @selector(undo:);
+      else if ([key isEqualToString:@"x"]) action = @selector(cut:);
+      else if ([key isEqualToString:@"c"]) action = @selector(copy:);
+      else if ([key isEqualToString:@"v"]) action = @selector(paste:);
+      else if ([key isEqualToString:@"a"]) action = @selector(selectAll:);
+    } else if (mods == cmd_shift && [key isEqualToString:@"z"]) {
+      action = @selector(redo:);
+    }
+    if (!action || !NSApp.mainMenu || menu_claims_key(NSApp.mainMenu, key, mods))
+      return ev;
+    [NSApp sendAction:action to:nil from:nil];
+    return (NSEvent *)nil;
+  }];
+}
+
 static void emit_winstate(NSWindow *win, const std::string &id) {
   bool fs = (win.styleMask & NSWindowStyleMaskFullScreen) != 0;
   auto b = [](bool v) { return v ? "true" : "false"; };
@@ -7922,10 +8048,20 @@ static void sock_read_loop() {
         pending_menus.push_back(MenuSpec{line.substr(5), {}, ""});
         build_stack.assign(1, {});
       } else if (in_menu_block && line.rfind("MENUROLE ", 0) == 0) {
-        // a standard menu (only "edit"), claiming this slot in the bar
+        // a standard menu ("edit", "app"), claiming this slot in the spec;
+        // a `nostd` flag field turns off edit's implicit stock group
         flush_root();
-        pending_menus.push_back(MenuSpec{"", {}, line.substr(9)});
+        std::vector<std::string> p = split_tabs(line.substr(9));
+        MenuSpec role_spec{"", {}, p.empty() ? "" : p[0]};
+        role_spec.no_standard = p.size() > 1 && p[1] == "nostd";
+        pending_menus.push_back(role_spec);
         build_stack.assign(1, {});
+      } else if ((in_menu_block || in_tray_block || in_ctx_block) &&
+                 line.rfind("ROLEITEM ", 0) == 0) {
+        // a stock item (copy, paste, …, or the whole `standard` group)
+        MenuItemSpec it;
+        it.role = line.substr(9);
+        build_stack.back().push_back(it);
       } else if ((in_menu_block || in_tray_block || in_ctx_block) &&
                  line.rfind("ITEM ", 0) == 0) {
         std::vector<std::string> p = split_tabs(line.substr(5));
@@ -8829,6 +8965,7 @@ int main(int argc, char *argv[]) {
   apply_dev_icon();   // dev only: TINYJS_ICON -> the Dock tile
   if (g_debug)
     install_devtools_key_monitor();
+  install_stock_key_fallback();  // ⌘C/⌘V when an app drops the stock Edit items
   enable_webgpu(g_w);
   install_close_hook(g_w);
   install_drop_hook();

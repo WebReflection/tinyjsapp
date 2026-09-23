@@ -1121,8 +1121,29 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
 
   // Menu items, shared by menu bar / tray / context menu. Items support
   // { id, label, key?, checked?, enabled?, submenu?: [...] } | { separator }.
+  // Stock editing items, placed by role inside an item list: { role: 'copy' },
+  // or { role: 'standard' } for the whole Undo…Select All group. Only macOS
+  // has anything to put there — its Edit shortcuts ride menu items. Windows
+  // and Linux webviews handle Ctrl+C/V themselves, so there the roles are
+  // dropped, along with any separator the drop leaves leading, trailing or
+  // doubled.
+  const STOCK_ROLES = new Set(['standard', 'undo', 'redo', 'cut', 'copy', 'paste', 'selectAll']);
+  function dropStockRoles(items) {
+    if (!items?.some((it) => it?.role)) return items;
+    const out = [];
+    for (const it of items) {
+      if (it?.role) continue;
+      if (it?.separator && (!out.length || out[out.length - 1].separator)) continue;
+      out.push(it);
+    }
+    while (out.length && out[out.length - 1].separator) out.pop();
+    return out;
+  }
+
   function sendItems(items) {
+    if (IS_WIN || IS_LINUX) items = dropStockRoles(items);
     for (const it of items ?? []) {
+      if (it.role) { if (STOCK_ROLES.has(it.role)) send('ROLEITEM ' + it.role); continue; }
       if (it.separator) { send('SEP'); continue; }
       if (it.submenu) {
         send('SUB ' + [one(it.id), one(it.label ?? it.id)].join('\t'));
@@ -1142,13 +1163,23 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   function sendMenuBlock(menus, win) {
     send('MENUBEGIN' + (win ? '@' + win : ''));
     for (const m of menus ?? []) {
-      // A role block claims a slot the LAUNCHER fills. 'edit' brings its own
-      // items and ignores anything you pass; 'app' (macOS) puts your items
-      // INSIDE the application menu, beside About — which is where Settings…
-      // belongs and the one place setMenu could not previously reach.
-      // Elsewhere the role is unknown and its items are dropped, which is why
-      // an app declares Settings here AND in a menu of its own off-macOS.
-      if (m?.role) { send('MENUROLE ' + one(m.role)); sendItems(m.items); continue; }
+      // A role block claims a slot the LAUNCHER fills. 'edit' is the Edit
+      // menu: on macOS the stock group comes first and your items go below
+      // it — unless your items place stock roles themselves ({ role: 'copy' },
+      // { role: 'standard' }), which hands you the whole order, or
+      // standard: false says no stock items at all. Windows/Linux have no
+      // stock Edit menu, so your own items alone make one there. 'app'
+      // (macOS) puts your items INSIDE the application menu, beside About —
+      // which is where Settings… belongs and the one place setMenu could not
+      // previously reach. Elsewhere the role is unknown and its items are
+      // dropped, which is why an app declares Settings here AND in a menu of
+      // its own off-macOS.
+      if (m?.role) {
+        const nostd = m.standard === false && !IS_WIN && !IS_LINUX;   // a macOS-only switch
+        send('MENUROLE ' + one(m.role) + (nostd ? '\tnostd' : ''));
+        sendItems(m.items);
+        continue;
+      }
       send('MENU ' + one(m.title));
       sendItems(m.items);
     }
@@ -1278,6 +1309,11 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     //
     // { role: 'edit' } is a placeholder for the standard Edit menu (Undo,
     // Cut, Copy, Paste, Select All) — put it wherever you want it in the bar.
+    // Give it items and they go below Select All; on Windows/Linux those
+    // items alone make an "Edit" menu in that slot. Stock roles inside items
+    // ({ role: 'copy' }, { role: 'standard' }) put the stock entries where
+    // you want them instead, and standard: false leaves them out (macOS keeps
+    // ⌘C/⌘V working regardless).
     // macOS installs that menu whether you ask or not, because the webview
     // needs its key equivalents to have working ⌘C/⌘V, so declaring the role
     // is the only way to say "and NOT first". Windows and Linux have no such
